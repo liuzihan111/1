@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <title>爱心汇聚 - 花花宝宝</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            touch-action: none; /* 防止触摸时的默认行为 */
+        }
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="loveHeart"></canvas>
+
+    <script>
+        const canvas = document.getElementById('loveHeart');
+        const ctx = canvas.getContext('2d');
+        let animationId = null;
+        
+        // 移动端优化配置 - 减少粒子数量以提高性能
+        const config = {
+            outerParticleCount: 150,  // 减少粒子数量，适合手机性能
+            innerParticleCount: 30,
+            textParticleDensity: 1.1,
+            text: '花花宝宝',
+            textSizeRatio: 0.15,      // 适当增大文字比例，手机上更清晰
+            colors: [
+                'rgba(255, 105, 180, ',
+                'rgba(255, 182, 193, ',
+                'rgba(255, 99, 132, ',
+                'rgba(255, 20, 147, ',
+                'rgba(199, 21, 133, '
+            ],
+            loveChars: ['L', 'O', 'V', 'E', 'l', 'o', 'v', 'e', '❤', '♡', '❥'],
+            heartSymbols: ['❤', '♡', '❥']
+        };
+        
+        // 工具函数
+        const utils = {
+            random: Math.random,
+            sin: Math.sin,
+            cos: Math.cos,
+            pow: Math.pow,
+            sqrt: Math.sqrt,
+            PI: Math.PI,
+            
+            randomRange(min, max) {
+                return min + (max - min) * this.random();
+            },
+            
+            distance(x1, y1, x2, y2) {
+                const dx = x2 - x1;
+                const dy = y2 - y1;
+                return this.sqrt(dx * dx + dy * dy);
+            },
+            
+            heartShape(t, scale = 1) {
+                const x = 16 * this.pow(this.sin(t), 3);
+                const y = 13 * this.cos(t) - 5 * this.cos(2*t) - 2 * this.cos(3*t) - this.cos(4*t);
+                const jitter = 0.5;
+                return {
+                    x: (x + (this.random() - 0.5) * jitter) * scale,
+                    y: -y * scale
+                };
+            },
+            
+            // 生成适合手机显示的文字点阵
+            generateTextPoints(text, centerX, centerY, textSize) {
+                const tempCanvas = document.createElement('canvas');
+                const tempCtx = tempCanvas.getContext('2d');
+                
+                // 优化手机上的文字尺寸和显示
+                const fontSize = textSize;
+                const textMetrics = this.measureText(tempCtx, text, fontSize);
+                const textWidth = textMetrics.width * 1.1;
+                const textHeight = fontSize * 1.2;
+                
+                tempCanvas.width = Math.ceil(textWidth);
+                tempCanvas.height = Math.ceil(textHeight);
+                
+                // 确保画布尺寸为偶数，避免采样偏差
+                if (tempCanvas.width % 2 !== 0) tempCanvas.width++;
+                if (tempCanvas.height % 2 !== 0) tempCanvas.height++;
+                
+                // 使用更粗的字体，手机上更清晰
+                tempCtx.font = `bold ${fontSize}px "Microsoft YaHei", "SimHei", sans-serif`;
+                tempCtx.textAlign = 'center';
+                tempCtx.textBaseline = 'middle';
+                tempCtx.fillStyle = '#ffffff';
+                tempCtx.fillText(text, tempCanvas.width / 2, tempCanvas.height / 2);
+                
+                const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+                const pixels = imageData.data;
+                const points = [];
+                
+                // 手机上适当增大采样步长，减少粒子数量
+                const sampleStep = Math.max(1, Math.floor(fontSize / 20));
+                
+                for (let y = 0; y < tempCanvas.height; y += sampleStep) {
+                    for (let x = 0; x < tempCanvas.width; x += sampleStep) {
+                        const index = (y * tempCanvas.width + x) * 4;
+                        if (pixels[index + 3] > 150) {
+                            const actualX = centerX - textWidth / 2 + x;
+                            const actualY = centerY - textHeight / 2 + y;
+                            points.push({ x: actualX, y: actualY });
+                        }
+                    }
+                }
+                
+                return points;
+            },
+            
+            measureText(ctx, text, fontSize) {
+                ctx.font = `bold ${fontSize}px "Microsoft YaHei", "SimHei", sans-serif`;
+                return ctx.measureText(text);
+            }
+        };
+        
+        // 移动端适配的画布尺寸设置
+        function resizeCanvas() {
+            // 考虑设备像素比，在高清屏幕上显示更清晰
+            const dpr = window.devicePixelRatio || 1;
+            const { innerWidth, innerHeight } = window;
+            
+            // 设置画布的CSS尺寸
+            canvas.style.width = `${innerWidth}px`;
+            canvas.style.height = `${innerHeight}px`;
+            
+            // 设置画布的实际尺寸（考虑设备像素比）
+            canvas.width = innerWidth * dpr;
+            canvas.height = innerHeight * dpr;
+            
+            // 调整绘图上下文比例
+            ctx.scale(dpr, dpr);
+            
+            resetParticlesPosition();
+        }
+        
+        // 粒子基类
+        class Particle {
+            constructor() {
+                this.x = 0;
+                this.y = 0;
+                this.targetX = 0;
+                this.targetY = 0;
+                this.size = 0;
+                this.speed = 0;
+                this.opacity = 0;
+                this.active = false;
+                this.arrived = false;
+                this.spawnTime = 0;
+                this.centerX = canvas.width / (2 * (window.devicePixelRatio || 1));
+                this.centerY = canvas.height / (2 * (window.devicePixelRatio || 1));
+            }
+            
+            initPosition() {
+                const dpr = window.devicePixelRatio || 1;
+                const width = canvas.width / dpr;
+                const height = canvas.height / dpr;
+                
+                this.x = utils.random() * width;
+                this.y = utils.random() * height;
+                this.spawnTime = utils.random() * 100;
+            }
+            
+            updatePosition(frame) {
+                if (!this.active) return;
+                
+                if (!this.arrived) {
+                    const distance = utils.distance(this.x, this.y, this.targetX, this.targetY);
+                    
+                    if (distance < this.speed * 0.5) {
+                        this.arrived = true;
+                    } else {
+                        const ease = Math.min(1, distance / 60);
+                        const ratio = (this.speed * ease) / distance;
+                        this.x += (this.targetX - this.x) * ratio;
+                        this.y += (this.targetY - this.y) * ratio;
+                    }
+                }
+                
+                if (this.opacity < this.maxOpacity) {
+                    this.opacity += 0.02;
+                    if (this.opacity > this.maxOpacity) this.opacity = this.maxOpacity;
+                }
+            }
+        }
+        
+        // 外层大爱心粒子类
+        class OuterLoveParticle extends Particle {
+            constructor(index) {
+                super();
+                this.index = index;
+                this.maxOpacity = 0.8;
+                this.init();
+            }
+            
+            init() {
+                super.initPosition();
+                const dpr = window.devicePixelRatio || 1;
+                const minDim = Math.min(canvas.width, canvas.height) / dpr;
+                this.heartScale = minDim / 38;  // 调整爱心大小适合手机
+                this.wanderFactor = utils.randomRange(4, 8);  // 减少移动范围
+                this.pulse = utils.random() * utils.PI * 2;
+                this.orbitPhase = utils.random() * utils.PI * 2;
+                
+                this.calculateTargetPosition();
+                
+                this.size = utils.randomRange(4, 8);  // 减小粒子大小
+                this.speed = utils.randomRange(2.5, 4);
+                this.text = config.loveChars[Math.floor(utils.random() * config.loveChars.length)];
+                this.color = config.colors[Math.floor(utils.random() * config.colors.length)];
+            }
+            
+            calculateTargetPosition() {
+                const t = (this.index / config.outerParticleCount) * utils.PI * 2;
+                const heartPoint = utils.heartShape(t, this.heartScale);
+                this.baseTargetX = this.centerX + heartPoint.x;
+                this.baseTargetY = this.centerY + heartPoint.y;
+                this.targetX = this.baseTargetX;
+                this.targetY = this.baseTargetY;
+            }
+            
+            update(frame) {
+                if (frame < this.spawnTime) return;
+                this.active = true;
+                
+                this.pulse += 0.03;
+                this.orbitPhase += 0.02;
+                const pulseEffect = utils.sin(this.pulse) * 0.05 + 1;
+                
+                this.targetX = this.baseTargetX + utils.cos(this.orbitPhase) * 2;
+                this.targetY = this.baseTargetY + utils.sin(this.orbitPhase) * 2;
+                
+                super.updatePosition(frame);
+                
+                if (this.arrived) {
+                    this.x = this.targetX + (utils.random() - 0.5) * this.wanderFactor * 0.3;
+                    this.y = this.targetY + (utils.random() - 0.5) * this.wanderFactor * 0.3;
+                }
+                
+                this.currentSize = this.size * pulseEffect;
+            }
+            
+            draw() {
+                if (!this.active || this.opacity <= 0) return;
+                
+                ctx.font = this.currentSize + 'px Arial, sans-serif';
+                ctx.fillStyle = this.color + this.opacity + ')';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(this.text, this.x, this.y);
+            }
+        }
+        
+        // 内层小爱心粒子类
+        class InnerLoveParticle extends Particle {
+            constructor(index) {
+                super();
+                this.index = index;
+                this.maxOpacity = 0.8;
+                this.init();
+            }
+            
+            init() {
+                super.initPosition();
+                const dpr = window.devicePixelRatio || 1;
+                const minDim = Math.min(canvas.width, canvas.height) / dpr;
+                this.radius = minDim / 14;  // 调整内层爱心大小
+                this.orbitPhase = utils.random() * utils.PI * 2;
+                
+                this.calculateTargetPosition();
+                
+                this.size = utils.randomRange(3, 6);  // 减小粒子大小
+                this.speed = utils.randomRange(2.5, 4);
+                this.text = config.heartSymbols[Math.floor(utils.random() * config.heartSymbols.length)];
+                this.color = 'rgba(255, 182, 193, ';
+            }
+            
+            calculateTargetPosition() {
+                const angle = (this.index / config.innerParticleCount) * utils.PI * 2;
+                this.targetX = this.centerX + utils.cos(angle) * this.radius;
+                this.targetY = this.centerY + utils.sin(angle) * this.radius;
+            }
+            
+            update(frame) {
+                if (frame < this.spawnTime) return;
+                this.active = true;
+                
+                this.orbitPhase += 0.03;
+                const orbitX = utils.cos(this.orbitPhase) * 2;
+                const orbitY = utils.sin(this.orbitPhase) * 2;
+                
+                super.updatePosition(frame);
+                
+                if (this.arrived) {
+                    this.x = this.targetX + orbitX;
+                    this.y = this.targetY + orbitY;
+                }
+            }
+            
+            draw() {
+                if (!this.active || this.opacity <= 0) return;
+                
+                ctx.font = this.size + 'px Arial, sans-serif';
+                ctx.fillStyle = this.color + this.opacity + ')';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(this.text, this.x, this.y);
+            }
+        }
+        
+        // 文字粒子类（组成"花花宝宝"）
+        class TextParticle extends Particle {
+            constructor(targetPoint) {
+                super();
+                this.targetPoint = targetPoint;
+                this.maxOpacity = 0.95;
+                this.init();
+            }
+            
+            init() {
+                super.initPosition();
+                this.pulse = utils.random() * utils.PI * 2;
+                this.wanderRange = utils.randomRange(0.3, 0.8);  // 减少移动范围，文字更清晰
+                
+                this.targetX = this.targetPoint.x;
+                this.targetY = this.targetPoint.y;
+                
+                this.size = utils.randomRange(2.5, 3.5);  // 适合手机的粒子大小
+                this.speed = utils.randomRange(2.5, 4.5);
+                this.color = config.colors[Math.floor(utils.random() * config.colors.length)];
+            }
+            
+            update(frame) {
+                if (frame < this.spawnTime) return;
+                this.active = true;
+                
+                this.pulse += 0.02;
+                const pulseEffect = utils.sin(this.pulse) * 0.05 + 1;
+                
+                super.updatePosition(frame);
+                
+                if (this.arrived) {
+                    this.x = this.targetX + (utils.random() - 0.5) * this.wanderRange;
+                    this.y = this.targetY + (utils.random() - 0.5) * this.wanderRange;
+                }
+                
+                this.currentSize = this.size * pulseEffect;
+            }
+            
+            draw() {
+                if (!this.active || this.opacity <= 0) return;
+                
+                ctx.shadowColor = 'rgba(255, 182, 193, 0.5)';
+                ctx.shadowBlur = 2;
+                
+                ctx.fillStyle = this.color + this.opacity + ')';
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.currentSize, 0, utils.PI * 2);
+                ctx.fill();
+                
+                ctx.shadowBlur = 0;
+            }
+        }
+        
+        // 粒子数组
+        const outerParticlesArray = [];
+        const innerParticlesArray = [];
+        const textParticlesArray = [];
+        let frameCount = 0;
+        let textPoints = [];
+        
+        // 初始化所有粒子
+        function initParticles() {
+            outerParticlesArray.length = 0;
+            innerParticlesArray.length = 0;
+            textParticlesArray.length = 0;
+            
+            // 创建外层粒子
+            for (let i = 0; i < config.outerParticleCount; i++) {
+                outerParticlesArray.push(new OuterLoveParticle(i));
+            }
+            
+            // 创建内层粒子
+            for (let i = 0; i < config.innerParticleCount; i++) {
+                innerParticlesArray.push(new InnerLoveParticle(i));
+            }
+            
+            // 生成文字点阵数据
+            const dpr = window.devicePixelRatio || 1;
+            const minDim = Math.min(canvas.width, canvas.height) / dpr;
+            const textSize = minDim * config.textSizeRatio;
+            
+            textPoints = utils.generateTextPoints(
+                config.text, 
+                canvas.width / (2 * dpr), 
+                canvas.height / (2 * dpr), 
+                textSize
+            );
+            
+            // 创建文字粒子
+            const totalTextPoints = textPoints.length;
+            const particlesToCreate = Math.max(
+                totalTextPoints, 
+                Math.floor(totalTextPoints * config.textParticleDensity)
+            );
+            
+            for (let i = 0; i < particlesToCreate; i++) {
+                const pointIndex = i % totalTextPoints;
+                textParticlesArray.push(new TextParticle(textPoints[pointIndex]));
+            }
+        }
+        
+        // 重置粒子位置
+        function resetParticlesPosition() {
+            const dpr = window.devicePixelRatio || 1;
+            const centerX = canvas.width / (2 * dpr);
+            const centerY = canvas.height / (2 * dpr);
+            const minDim = Math.min(canvas.width, canvas.height) / dpr;
+            
+            outerParticlesArray.forEach(particle => {
+                particle.centerX = centerX;
+                particle.centerY = centerY;
+                particle.heartScale = minDim / 38;
+                particle.calculateTargetPosition();
+            });
+            
+            innerParticlesArray.forEach(particle => {
+                particle.centerX = centerX;
+                particle.centerY = centerY;
+                particle.radius = minDim / 14;
+                particle.calculateTargetPosition();
+            });
+            
+            // 更新文字粒子
+            const textSize = minDim * config.textSizeRatio;
+            textPoints = utils.generateTextPoints(config.text, centerX, centerY, textSize);
+            
+            textParticlesArray.forEach((particle, i) => {
+                particle.centerX = centerX;
+                particle.centerY = centerY;
+                const pointIndex = i % textPoints.length;
+                particle.targetPoint = textPoints[pointIndex];
+                particle.targetX = textPoints[pointIndex].x;
+                particle.targetY = textPoints[pointIndex].y;
+            });
+        }
+        
+        // 动画循环 - 手机性能优化
+        function animate() {
+            frameCount++;
+            
+            // 清除画布
+            const dpr = window.devicePixelRatio || 1;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
+            ctx.fillRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+            
+            // 批量更新和绘制粒子，减少绘制次数
+            let i;
+            
+            // 外层粒子
+            for (i = 0; i < outerParticlesArray.length; i++) {
+                outerParticlesArray[i].update(frameCount);
+                outerParticlesArray[i].draw();
+            }
+            
+            // 内层粒子
+            for (i = 0; i < innerParticlesArray.length; i++) {
+                innerParticlesArray[i].update(frameCount);
+                innerParticlesArray[i].draw();
+            }
+            
+            // 文字粒子
+            for (i = 0; i < textParticlesArray.length; i++) {
+                textParticlesArray[i].update(frameCount);
+                textParticlesArray[i].draw();
+            }
+            
+            animationId = requestAnimationFrame(animate);
+        }
+        
+        // 触摸事件处理 - 增加交互性
+        let lastTouchX = 0;
+        let lastTouchY = 0;
+        let isTouching = false;
+        
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            isTouching = true;
+            const touch = e.touches[0];
+            const dpr = window.devicePixelRatio || 1;
+            lastTouchX = touch.clientX;
+            lastTouchY = touch.clientY;
+        }, { passive: false });
+        
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            if (isTouching) {
+                const touch = e.touches[0];
+                const dpr = window.devicePixelRatio || 1;
+                lastTouchX = touch.clientX;
+                lastTouchY = touch.clientY;
+            }
+        }, { passive: false });
+        
+        canvas.addEventListener('touchend', () => {
+            isTouching = false;
+        });
+        
+        // 窗口大小变化处理
+        window.addEventListener('resize', resizeCanvas);
+        
+        // 页面可见性处理
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && animationId) {
+                cancelAnimationFrame(animationId);
+                animationId = null;
+            } else if (!document.hidden && !animationId) {
+                animationId = requestAnimationFrame(animate);
+            }
+        });
+        
+        // 初始化
+        resizeCanvas();
+        initParticles();
+        animate();
+    </script>
+</body>
+</html>
